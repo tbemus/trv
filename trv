@@ -1,0 +1,759 @@
+#!/bin/bash
+####  The Route View script.
+####  Created by Tony Bemus on 11/18/2019
+####  This script queries Routeview servers for internet routes via BGP
+####
+## Example: trv -p prefixlist.txt -o query.txt
+## Example: trv -c <personal_server_list.txt>
+## Example: trv show servers/last
+#############################################################
+####  Written and Supported by Tony Bemus
+#### 0.1 - 11/24/2019 (AJB) - Initial working version
+#### 0.2 - 11/25/2019 (AJB) - Added options for Config file and output file
+#### 0.3 - 11/26/2019 (AJB) - Added Options for full output and ASN
+#### 0.4 - 11/27/2019 (AJB) - Changed the command to work with more servers
+#### 0.5 - 11/30/2019 (AJB) - Added a history and the "Last" option
+#### 0.6 - 12/1/2019  (AJB) - Added IPV6 and adjustable history
+#### 0.7 - 12/2/2019  (AJB) - Added AS OrgNames (with learning local list) to the route
+#### 0.8 - 12/3/2019  (AJB) - Added check if ran more then 2 times in 2 minutes
+#### 0.9 - 12/7/2019  (AJB) - Fixed diplay for history and removed the sumarized statements
+#### 1.0 - 12/8/2019  (AJB) - Added IP version auto detect and missing prefix check
+#### 1.1 - 12/9/2019  (AJB) - Added file cleanup remove old files and fixed orgname lookup grep
+#### 1.2 - 12/15/2019 (AJB) - Changed Route View to show routes even if trv_asn is not found
+#### 1.3 - 12/21/2019 (AJB) - Updated the History table to show Username and readable date and time
+####                          Changed the last view to use the History table
+#### 1.4 - 12/28/2019 (AJB) - Changed to printf output tables and added check for invalid command
+#### 1.5 - 1/5/2020   (AJB) - Added the no colors option
+#### 2.0 - 1/12/2020  (AJB) - Changed the Telnet connection to create a NC Proxy
+####                          Added option to cleanup proxy proccesses and fifo pipes, added lock file and check
+#### 2.1 - 6/17/2020  (AJB) - Added RADB and RKPI Check to headder
+#### 2.2 - 12/2/2020  (AJB) - Renamed Script to TRV
+#### 2.3 - 12/3/2020  (AJB) - Changed script to run querys in parellel, Removed config file, Moved AS file to working dir
+#### 2.4 - 3/2/2021   (AJB) - Fix working dir permissions and removed references to Arbor Cloud
+#### 2.5 - 5/11/2022  (AJB) - Strip out the cidr on the query prefix to reduce user confusion.
+#### 2.7 - 7/28/2022  (AJB) - fix permission error on trying to change permissions on the ASN file
+#### 2.8 - 5/23/2023  (AJB) - Removed RADB Checks and added Non Support statement  
+##############################################################
+
+### Colors
+NONE='\033[00m'
+RED='\033[01;31m'
+GREEN='\033[01;32m'
+YELLOW='\033[01;33m'
+PURPLE='\033[01;35m'
+CYAN='\033[01;36m'
+WHITE='\033[01;37m'
+BOLD='\033[1m'
+UNDERLINE='\033[4m'
+
+### Define Default values
+trv_out=$(mktemp)
+trv_routes=$(mktemp)
+trv_working="/tmp/trv"  # working directory where the history and fifo file live
+trv_asn="19905"  # Default Neustar AS
+trv_version="2.8 - 5/23/2023"  # Script verison and date
+trv_cleanup_keep="1000"  # how many old lookups to keep
+trv_as_list=$trv_working/trv_rv_as_list.txt  # location of Local AS Orgname lookup file
+#trv_rv_servers_a=(EU-London@route-views.linx.routeviews.org EE-Serbia@route-views.sox.routeviews.org  AU-Vocus@route-views.sydney.routeviews.org AU-Perth@route-views.waix.routeviews.org AF-WorkOL@route-views.napafrica.routeviews.org AF-TESPOK@route-views.kixp.routeviews.org AP-Sinapore@route-views.sg.routeviews.org AP-Tokyo@route-views.wide.routeviews.org NA-Oregon-3@route-views3.routeviews.org NA-Oregon-4@route-views4.routeviews.org NA-LightPoint@route-views.nwax.routeviews.org NA-VA-HE_RV@route-server.he.net NA-SF-MIX@route-views.sfmix.routeviews.org NA-Equinix@route-views.eqix.routeviews.org NA-Chicago@route-views.chicago.routeviews.org NA-Telx_Grp@route-views.telxatl.routeviews.org NA-Miami@route-views.flix.routeviews.org NA-Zeb-ISC@route-views.isc.routeviews.org SA-Brazil@route-views.saopaulo.routeviews.org SA-Nic.br_2@route-views2.saopaulo.routeviews.org )
+trv_rv_servers_a=(EE-Serbia@route-views.sox.routeviews.org  AU-Vocus@route-views.sydney.routeviews.org AU-Perth@route-views.waix.routeviews.org AF-WorkOL@route-views.napafrica.routeviews.org AF-TESPOK@route-views.kixp.routeviews.org AP-Sinapore@route-views.sg.routeviews.org AP-Tokyo@route-views.wide.routeviews.org NA-Oregon-3@route-views3.routeviews.org NA-Oregon-4@route-views4.routeviews.org NA-LightPoint@route-views.nwax.routeviews.org NA-SF-MIX@route-views.sfmix.routeviews.org NA-Equinix@route-views.eqix.routeviews.org NA-Chicago@route-views.chicago.routeviews.org NA-Telx_Grp@route-views.telxatl.routeviews.org NA-Miami@route-views.flix.routeviews.org NA-Zeb-ISC@route-views.isc.routeviews.org SA-Brazil@route-views.saopaulo.routeviews.org SA-Nic.br_2@route-views2.saopaulo.routeviews.org )
+trv_rv_pre="54"
+trv_rv_start="21"
+trv_rv_show_cmd_aray=(s ser servers a as asn-list l last v ver version h his history) # allowed show commmands
+trv_lock_test=$trv_working/trv_lock
+trv_repeat_timer="5"
+trv_fifo_fix=""
+trv_turbo="x"
+
+##----------------
+##  Start of the Argument section
+##----------------
+
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+  -a|--asn)
+    dirty=$2; UDIRTY=${dirty^^}
+    export trv_asn="`echo "${UDIRTY//[^0-9_]/}" | cut -c -8`"
+    shift
+    shift
+    ;;
+  --cleanup)
+    trv_proxy_cleanup="x"
+    shift
+    ;;
+  -f|--full)
+    trv_wif="x"
+    shift
+    ;;
+  -nc|--nocolors)
+    trv_nce="x"
+    shift
+    ;;
+  -o|--out)
+    trv_out="$2"
+    trv_oute="x"
+    shift # past argument
+    shift # past value
+    ;;
+  -p|-v4|-v6|--prefix)
+    dirty=$2; UDIRTY=${dirty^^}
+    export trv_prefix="`echo "${UDIRTY//[^A-F0-9.:\/]/}" `"
+           trv_prefix=$(awk -F "/" '{print $1}' <<< "$trv_prefix")
+    export trv_ipv_check="`echo "${trv_prefix//[^.:]/}" | cut -c -1`"
+    trv_method='rview'
+    if [ $trv_ipv_check == "." ]; then
+    trv_show_cmd="show ip bgp"
+    trv_ipv="4"
+    fi
+    if [ $trv_ipv_check == ":" ]; then
+    trv_show_cmd="show bgp"
+    trv_ipv="6"
+    fi
+    shift
+    shift
+    ;;
+  -r|--repeat)
+    trv_repeat="x"
+    shift
+    ;;
+  -s|--server)
+    trv_server="$2"
+    trv_servere="x"
+    shift
+    shift
+    ;;
+  sh|sho|show)
+    trv_rv_show_cmd="$2"
+    trv_rv_show="x"
+    trv_history="$3"
+    shift # past argument
+    shift # past value
+    shift # past value
+    ;;
+  -his|--history)
+    dirty=$2; UDIRTY=${dirty^^}
+    export trv_history="`echo "${UDIRTY//[^0-9_]/}" | cut -c -3`"
+    shift # past argument
+    shift # past value
+    ;;
+  -h|--help|*)
+      shift # past argument
+      echo "  "
+      echo " ##  The TRV (Tony's Route View) query script . "
+      echo " ##  Version $trv_version "
+      echo " ## "
+      echo " ##         Usage:  trv then the prefix"
+      echo " ## Example: trv -p 195.110.96.1"
+      echo " ## Example: trv show servers (show a list of servers)"
+      echo " ##    Written by Tony Bemus - NO GUARANTEES OF SUPPORT"
+      echo "  "
+      echo "  Output: <server name> <server bgp route>  <Query Status>  <AS Path Route> "
+
+    if [ ! -z $trv_nce ]; then
+      echo -e "           Query Status: YES = AS Found in Route,         NO = AS not Found in Route, "
+      echo -e "                         No Response = Server did not respond,  No Route = Server reports '% Network not in table' "
+    else
+      echo -e "           Query Status: ${GREEN}YES${NONE} = AS Found in Route,         ${RED}NO${NONE} = AS not Found in Route, "
+      echo -e "                         ${YELLOW}No Response${NONE} = Server did not respond,  ${PURPLE}No Route${NONE} = Server reports '% Network not in table' "
+    fi
+
+      echo "                If you want to see the previous results then use the 'show last' command "
+      echo "  "
+      echo " --cleanup)            Clean up the Proxy Processes and fifo files  "
+      echo "  "
+      echo " -f|--full)            Get the full route view output "
+      echo "  "
+      echo " -nc|--nocolors)        Turn off all Colors (No Colors)"
+      echo "  "
+      echo " -o|--out)             Send the output of the query to a file   "
+      echo "  "
+      echo " -p|--prefix)          Enter the IPv4 or IPv6 prefix (auto detecting version) "
+      echo "  "
+      echo " -r|--repeat)          Repeat Mode,  repeats the same query untill the CTRL + C is entered "
+      echo "  "
+      echo " -s|--server)          Run query on individual route view server. "
+      echo "  "
+      echo " sh|show)              Run the following show commands: "
+      echo "                          Options: "  ${trv_rv_show_cmd_aray[@]}
+      echo "                          Example:  trv show hisory [number of history items]   "
+      echo "  "
+      echo " -his|--history)       How many history items to list. "
+      echo "  "
+      echo " -h|--help)            Show this help page. "
+      echo "  "
+      echo " ##    Written by Tony Bemus - NO GUARANTEES OF SUPPORT"
+      echo "  "
+      exit
+      ;;
+  esac
+  done
+  ##----------------
+  ##  End of the Argument section
+  ##----------------
+
+  trv_prefix_dir=$(echo $trv_prefix | sed 's#/#-#g')
+#  trv_routes="routes_$trv_prefix_dir.txt"
+
+trap trv_cleanup exit
+function trv_create_history
+{
+    trv_date=$(date +%F_%H-%M-%S)
+    trv_last_list_file="$trv_working/$trv_prefix_dir--$trv_asn--$trv_date"
+    cp $trv_out $trv_last_list_file # create a history
+    chmod 666 $trv_last_list_file
+    cp "$trv_as_list" "$trv_as_list".tmp
+    sort -k1.3 -n "$trv_as_list".tmp | uniq > "$trv_as_list"
+    rm "$trv_as_list".tmp
+    if [ $(stat -c '%U' "$trv_as_list") == $(whoami) ] ; then
+      chmod 666 "$trv_as_list"
+    fi
+}
+
+
+function trv_cleanup
+{
+  if [ -z "$trv_oute" ]; then
+      rm "$trv_out"  # delete the temp file
+  fi
+  find $trv_working/ -type f -printf "%T+\t%p\n" | sort -r | awk '{print $2}' | grep '\-\-' | tail -n +$trv_cleanup_keep | xargs -I {} rm -- {}
+  rm  "$trv_routes"* # delete the temp routes file
+  if [  -z "$trv_rv_show" ]; then
+  rm  "$trv_lock_test"
+fi
+
+}
+
+function trv_telnet_proxy_cleanup
+{
+
+     for p in $(ps aux | grep 'nc -k -l 54' | grep -v grep | awk {'print $2}')
+       do
+          echo "Stopping proccess $p"
+          kill $p
+       done
+
+       for m in $(find $trv_working/nc_f*  -maxdepth 1 -type p )
+         do
+            echo "Deleting FIFO $m"
+            rm  $m
+         done
+
+}
+
+  if [  ! -d $trv_working ]
+        then
+          mkdir $trv_working
+          chmod 776 $trv_working
+  fi
+
+if [  ! -f "$trv_routes.$trv_server_localport" ]
+      then
+        touch "$trv_routes.$trv_server_localport"
+fi
+if [ -z $trv_history ]
+      then
+        trv_history="15"
+fi
+if [  ! -f $trv_as_list ]
+      then
+        touch $trv_as_list
+        chmod 776 $trv_as_list
+fi
+
+if [ ! -z "$trv_rv_show" ]||[ $trv_proxy_cleanup ];
+then
+echo "Show command used" > "$trv_routes.$trv_server_localport"
+else
+
+    until [ ! -f $trv_lock_test ]
+  do
+       echo " The Rout View script is running by another user.  Please wait till they are done"
+       cat $trv_lock_test
+       sleep 5
+  done
+  touch $trv_lock_test
+  echo " The Route View started by $(whoami) at $(date +"%D %T %Z") " > $trv_lock_test
+  chmod 666 $trv_lock_test
+      if [ -x $trv_prefix ]
+          then
+           echo "   "
+           echo "  Prefix is invalid or not provided"
+           echo "  Please specify the prefix with the -p option "
+           echo "      Example: trv -p 195.110.96.0/24"
+           echo "   "
+           exit 1
+      fi
+fi
+
+function ac_headder_printf
+{
+  trv_server_numbers=${#trv_rv_servers_a[@]}
+  format="%1s %17s %-20s %-10s %20s \n"
+                  ## Display the headder befor running the loop queries
+         echo -e ----------------------------------------------------------------   | tee $trv_out
+          printf "$format" "|" "AS Route Check for IPv$trv_ipv " "prefix: $trv_prefix "" -- "" TRV Version $trv_version " | tee -a $trv_out
+          printf "$format" "|" "Servers ($trv_server_numbers) " "BGP Route " "$trv_asn? "   "Route " | tee -a $trv_out
+         echo -e ----------------------------------------------------------------   | tee -a $trv_out
+}
+
+function trv_telnet_check
+{
+
+trv_netstat_port_check=$(ps aux | grep "nc -k -l $trv_server_localport" | grep -v grep ) # variable to check for proxy port
+trv_telnet_connect_check=$(ps aux | grep -E "nc -t $trv_server" | grep -v grep ) # variable to check for nc telnet process
+trv_telnet_fifo="$trv_working/nc_f$trv_server_localport"
+
+      # check if the nc proxy or telnet proxess is not running
+  if [ -z "$trv_netstat_port_check" ]||[ -z "$trv_telnet_connect_check" ]
+  then
+       # echo "Telnet-proxy on port $trv_server_localport for $trv_server NOT found,  Starting now"
+       echo -e "|" | tr -d '\n'
+               # check if netstat port process is running,  if it is then kill it
+    trv_netstat_port_pip=$(ps aux | grep "nc -k -l $trv_server_localport" | grep -v grep | awk '{print $2}' | tail -n 1 )
+       if [ ! -z "$trv_netstat_port_pip" ]; then
+          kill "$trv_netstat_port_pip"
+       fi
+               # check if nc telnet process is running,  if it is then kill it
+    trv_telnet_server_pip=$(ps aux | grep -E "nc -t $trv_server" | grep -v grep | awk '{print $2}' | tail -n 1 )
+       if [ ! -z "$trv_telnet_server_pip" ]; then
+          kill "$trv_telnet_server_pip"
+       fi
+               # check if the fifo file is created
+       if [ ! -p $trv_telnet_fifo ]; then
+          mkfifo -m 0660 "$trv_telnet_fifo"
+       fi
+
+    timeout -k 10 15m  nc -k -l "$trv_server_localport" 0< "$trv_telnet_fifo" | timeout -k 10 15m  nc -t "$trv_server" "$trv_server_port" 1> "$trv_telnet_fifo" &
+    echo -e '\n''\n' '\n' | timeout -k 10 1s nc localhost $trv_server_localport
+     # telnet-proxy $trv_server $trv_server_port $trv_server_localport > /dev/null 2>&1 &
+# else
+# echo "Netcat proxy on port $trv_server_localport for $trv_server found"
+fi
+# echo " "
+
+}
+
+
+function trv_query
+{
+    if [ "$trv_servere" ]; then
+      echo -e  '\r'   '\r' '\r' "terminal length 0" '\r' "$trv_show_cmd $trv_prefix" | timeout -k 10 1s nc -t  $trv_server $trv_server_port  2>1 > "$trv_routes.$trv_server_localport"
+    else
+       trv_telnet_check 2>&1 > /dev/null
+       echo -e '\n' '\n' " terminal length 0 " '\n' '\n' "$trv_show_cmd $trv_prefix" | timeout -k 10 1s nc localhost $trv_server_localport  2>&1 > "$trv_routes.$trv_server_localport"
+      # echo -e  "$trv_show_cmd $trv_prefix | timeout 1s nc localhost $trv_server_localport "
+    fi
+  trv_acq=$(cat "$trv_routes.$trv_server_localport" | grep -B3 best | grep -E "$trv_asn|Local" | grep -v "$trv_asn:" | sed 's/,.*$/ /g' | tr -d '\r' | tail -n 1 )
+  trv_bgp_route_entery=$(cat "$trv_routes.$trv_server_localport" | grep "BGP routing table" | awk '{print $6}' | sed 's/,/ /g' | tr -d '\r' | tail -n 1 )
+
+  if [  -z "$trv_acq" ]
+        then  #if it does not find the ASN in the query then set acr to NO
+          trv_acr=$(echo -e "${RED}NO${NONE} ")
+          trv_acro="NO "
+  fi
+  if [ ! -s "$trv_routes.$trv_server_localport" ]
+        then  #if the routes output is blank (server refused connection) then set acr to  No Response
+          trv_acr=$(echo -e "${YELLOW}No Response${NONE} ")
+          trv_acro=" No Response"
+  fi
+  if  grep "Network" "$trv_routes.$trv_server_localport" 1> /dev/null
+        then  #if the routes output is blank (server refused connection) then set acr to No Route
+          trv_acr=$(echo -e "${PURPLE}No Route${NONE} ")
+          trv_acro="No Route"
+  fi
+  if  grep "0.0.0.0/0" "$trv_routes.$trv_server_localport" 1> /dev/null
+        then  #if the routes output is blank (server refused connection) then set acr to No Route
+          trv_acr=$(echo -e "${PURPLE}! Default Route !${NONE} ")
+          trv_acro="! Default Route !"
+  fi
+  if [  ! -z $(grep "Invalid" "$trv_routes.$trv_server_localport") ]&&[ -z $trv_bgp_route_entery ]
+        then  #if the routes output is blank (server refused connection) then set acr to Invalid Command
+          trv_acr=$(echo -e "${CYAN}NO IPV6 Support / Invalid Command${NONE} ")
+          trv_acro="NO IPV6 Support / Invalid Command"
+  fi
+
+
+  if [  ! -z "$trv_acq" ]
+        then  #if it find the ASN in the query then set acr to Yes
+          trv_acr=$(echo -e "${GREEN}YES${NONE}")
+          trv_acro="YES"
+  fi
+
+
+format="%-1s %-15s %-20s %-10s %-20s \n"
+        if [ ! -z $trv_nce ]; then
+               printf "$format" "|" "$trv_server_name" "$trv_bgp_route_entery" "$trv_acro" "$(trv_orgname_lookup_nc)"
+        else
+               printf "$format" "|" "$trv_server_name" "$trv_bgp_route_entery" "$trv_acr" "$(trv_orgname_lookup)"
+        fi
+        printf "$format" "|" "$trv_server_name" "$trv_bgp_route_entery" "$trv_acro" "$(trv_orgname_lookup_nc)"   >> "$trv_out"
+
+      if [ $trv_wif ]; then  ## display the full results of the command when the -f option is used
+  echo " "
+  cat "$trv_routes.$trv_server_localport"
+  echo " "
+  echo " ========================================================================="
+fi
+}
+
+function trv_orgname_lookup
+{
+  if [ "$trv_acro" = "YES" ]; then
+     trv_as="`echo "${trv_acq}"`"
+else
+    trv_all_route=$(cat "$trv_routes.$trv_server_localport" | grep  -B3 best | sed 's/,.*$/ /g' | grep -i -v -e "\." |  grep -i -v -e ":" | grep -E -v "\b1\b|\b0\b"  )
+     trv_as="`echo "${trv_all_route//[^0-9 ]/}"`"
+fi
+
+
+   IFS=" "
+for i in $(echo "$trv_as" | tr -d '\r');  do
+  trv_as_local=$(grep "\bAS$i\b" $trv_as_list)
+  if [ -z "$trv_as_local" ]
+        then  #if it does not find the ASN in the local list then look it up  and save it
+          orgname=$(whois -h whois.radb.net as$i | grep -Ei "as-name|ASName" |head -1 | awk '{print $2}')
+            if [ -z $orgname ] ; then
+               orgname=$(whois as$i | grep as-name |head -1 | awk '{print $2}')
+            fi
+        echo -e "${YELLOW}->${NONE} AS$i ${GREEN}($orgname)${NONE} " | tr -d '\n'
+                echo -e "AS$i $orgname " >> $trv_as_list
+   else
+    orgname=$(grep "\bAS$i\b" $trv_as_list  | awk '{print $2}')
+        echo -e "${YELLOW}->${NONE} AS$i ${CYAN}($orgname)${NONE} " | tr -d '\n'
+  fi
+done
+}
+
+function trv_orgname_lookup_nc
+{
+  if [ "$trv_acro" = "YES" ]; then
+     trv_as="`echo "${trv_acq}"`"
+else
+    trv_all_route=$(cat "$trv_routes.$trv_server_localport" | grep  -B3 best | sed 's/,.*$/ /g' | grep -i -v -e "\." |  grep -i -v -e ":" | grep -E -v "\b1\b|\b0\b"  )
+     trv_as="`echo "${trv_all_route//[^0-9 ]/}"`"
+fi
+   IFS=" "
+for i in $(echo "$trv_as" | tr -d '\r');  do
+  trv_as_local=$(grep "\bAS$i\b" $trv_as_list)
+  if [ -z "$trv_as_local" ]
+        then  #if it does not find the ASN in the local list then look it up  and save it
+          orgname=$(whois -h whois.radb.net as$i | grep as-name |head -1 | awk '{print $2}')
+          echo -e "-> AS$i ($orgname) " | tr -d '\n'
+          echo -e "AS$i $orgname " >> $trv_as_list
+   else
+    orgname=$(grep "\bAS$i\b" $trv_as_list  | awk '{print $2}')
+    echo -e "-> AS$i ($orgname) " | tr -d '\n'
+  fi
+done
+}
+
+function trv_rv_servers_report
+{
+  echo -e ----------------------------------------------------------------
+  echo -e "  Report of servers  "
+if [  ! -z  $trv_nce ]; then
+  echo -e "    $(grep -v "RADB" < $trv_out | grep YES | wc -l) servers report Yes ,  $(grep -v "RADB" < $trv_out | grep "NO " | wc -l) servers report NO"
+else
+  echo -e "    ${GREEN}$(grep -v "RADB" < $trv_out | grep YES | wc -l)${NONE} servers report ${GREEN}Yes${NONE},  ${RED}$(grep -v "RADB" < $trv_out | grep "NO " | wc -l)${NONE} servers report ${RED}NO${NONE}"
+fi
+  echo -e ----------------------------------------------------------------
+}
+function trv_rv_as_listpf
+{
+     # List the ASN list using printf
+IFS=" "
+divider===================================================
+divider=$divider$divider
+header="\n %-7s %-10s %-10s \n"
+format=" %-7s %-10s %-10s \n"
+width=35
+printf "$header" "Count" "AS Number" "Oranization Name"
+printf "%$width.${width}s\n" "$divider"
+trv_count=1
+while read -r trv_as_number trv_as_name
+do
+  printf "$format" "$trv_count" "$trv_as_number" "$trv_as_name"
+  let trv_count=trv_count+1
+done < $trv_as_list
+}
+
+function trv_rv_history_listpf
+{
+  ls -lAt --time-style=+"%F %T" $trv_working/ | grep "\-\-" | grep -vE "nc_f|trv_rv_as_list" | head -n  $trv_history  | awk '{print $3"--"$6"--"$7"--"$8}' | sed 's/--/;/g' > $trv_out
+     # List the history
+IFS=";"
+divider===================================================
+divider=$divider$divider
+header="\n %-4s %-12s %-12s %-10s %-32s %-10s \n"
+format=" %-4s %-12s %-12s %-10s %-32s %-10s \n"
+width=100
+printf "$header" " " "User " "Date"  "Time" "  Prefix" "AS Number"
+printf "%$width.${width}s\n" "$divider"
+trv_count=1
+while read -r trv_h_user trv_file_date trv_time trv_prefix_number trv_as_number trv_date_time
+do
+  printf "$format" "$trv_count" "$trv_h_user"  "$trv_file_date" "$trv_time"  "$trv_prefix_number" "$trv_as_number"
+  let trv_count=trv_count+1
+done < $trv_out
+}
+
+function trv_rv_serverspf
+{
+     # List the Route View servers using printf
+#trv_rv_cfg_server=$(tail -n +2 $trv_rv_cfg)
+trv_rv_i="$trv_rv_start"
+divider===================================================
+divider=$divider$divider$divider
+header="\n %-18s %-40s %-15s  \n"
+format="%-18s %-40s %-15s\n"
+width=125
+printf "$header" " Server Name" " Host Name" "Local Proxy port"
+printf "%$width.${width}s\n" "$divider"
+
+for trv_rv in "${trv_rv_servers_a[@]}"
+      do
+      trv_server_name=$(echo $trv_rv | awk -F\@ '{print $1}')
+      trv_server=$(echo $trv_rv | awk -F\@ '{print $2}')
+      trv_server_localport="$trv_rv_pre$trv_rv_i"
+
+  printf "$format" "$trv_server_name" "$trv_server"  "$trv_server_localport"
+
+ let trv_rv_i++
+
+done
+}
+
+function trv_rv_routes
+{
+  ### Loop to read the servers to run the query function
+trv_rv_i="$trv_rv_start"
+  for trv_rv in "${trv_rv_servers_a[@]}"
+        do
+        trv_server_name=$(echo $trv_rv | awk -F\@ '{print $1}')
+        trv_server=$(echo $trv_rv | awk -F\@ '{print $2}')
+        trv_server_localport="$trv_rv_pre$trv_rv_i"
+        trv_server_port="23"
+  if [ $trv_turbo ] ; then
+  trv_query &
+else
+  trv_query
+fi
+
+ let trv_rv_i++
+
+done
+
+if [ $trv_turbo ] ; then
+ wait
+fi
+
+ # loop through server list to add routes to out file.
+trv_rv_i="$trv_rv_start"
+  for trv_rv in "${trv_rv_servers_a[@]}"
+        do
+          trv_server_name=$(echo $trv_rv | awk -F\@ '{print $1}')
+          trv_server=$(echo $trv_rv | awk -F\@ '{print $2}')
+          trv_server_localport="$trv_rv_pre$trv_rv_i"
+        echo " =========================================================================" >> "$trv_out"
+        echo " " >> "$trv_out"
+        echo " $trv_server_name  - Host: $trv_server - Local Proxy port: $trv_server_localport "  >> "$trv_out"
+        echo " " >> "$trv_out"
+        cat "$trv_routes.$trv_server_localport" >> "$trv_out"
+        echo " " >> "$trv_out"
+
+ let trv_rv_i++
+
+done
+
+
+}
+
+function trv_rv_last
+{
+    trv_rv_history_listpf
+while :
+do
+
+  trv_last_list=$(ls -lAt $trv_working/ | grep '\-\-' | grep -v "nc_f" | head -n $trv_history )
+  trv_last_list_num=$(echo ${trv_last_list[@]} | wc -l )
+  echo " "
+  echo  "Here is a list of recent TheRoute Views"
+  read -n3 -p "Please select a recent route check by entering the number, or q to Quit :" trv_last_choice
+  echo " "
+  uparrow=$'\x1b[A'
+   downarrow=$'\x1b[B'
+   leftarrow=$'\x1b[D'
+   rightarrow=$'\x1b[C'
+
+   case "$trv_last_choice" in
+   $uparrow)
+      echo "Up-arrow is an Invalid option. Try another one."
+      ;;
+   $downarrow)
+      echo "Down-arrow  is an Invalid option. Try another one."
+      ;;
+   $leftarrow)
+      echo "Left-arrow is an Invalid option. Try another one."
+      ;;
+   $rightarrow)
+      echo "Right-arrow is an Invalid option. Try another one."
+      ;;
+    *)
+
+  if  (( trv_last_choice == "q" )) ; then
+
+        echo "You answered Quit, Exiting now!"
+        exit
+
+  elif (( trv_last_choice > 0 && trv_last_choice <= $trv_last_list_num )) ; then
+    trv_last=$(ls -lAt $trv_working/ | grep '\-\-' | grep -v "nc_f" | head -n $trv_history | sed "$trv_last_choice q;d" | awk '{print $9}')
+      if [ $trv_wif ]; then
+          cat $trv_working/$trv_last
+          break
+      fi
+      echo -e ----------------------------------------------------------------
+      echo -e "|  Displaying Check Route for Prefix_Date: $trv_last "
+      echo -e ----------------------------------------------------------------
+          cat $trv_working/$trv_last | grep "|"  | tee $trv_out
+       trv_rv_servers_report
+      break
+  else
+        echo "Invalid option. Try another one."
+  fi
+     esac
+done
+}
+
+
+if [ $trv_rv_show ]; then
+  ## Route View show commands
+if [[ " "${trv_rv_show_cmd_aray[@]}" " == *" "$trv_rv_show_cmd" "* ]] ;then
+    echo "  "
+
+else
+    echo "  "
+    echo "  ERROR in show command "
+    echo "      $trv_rv_show_cmd: is not recognized command. "
+    echo "  Valid Show Commands are:"
+    echo "      ${trv_rv_show_cmd_aray[@]/%/,}"
+    echo "  "
+    exit 1
+fi
+
+if  [ $trv_history == "-f" ]||[ $trv_history == "f" ]; then
+      trv_history="15"
+      trv_wif="x"
+else
+  dirty=$trv_history; UDIRTY=${dirty^^}
+  export trv_history="`echo "${UDIRTY//[^0-9]/}" | cut -c -3`"
+  if  [ -x $trv_history ]; then
+    trv_history="15"
+  fi
+fi
+
+      if  [ $trv_rv_show_cmd == "s" ]||[ $trv_rv_show_cmd == "ser" ]||[ $trv_rv_show_cmd == "server" ]||[ $trv_rv_show_cmd == "servers" ];then
+        trv_rv_serverspf
+        # rm $trv_out
+        exit
+      fi
+      if [ $trv_rv_show_cmd == "a" ]||[ $trv_rv_show_cmd == "as" ] || [ $trv_rv_show_cmd == "asn" ] || [ $trv_rv_show_cmd == "asn-list" ]; then
+        trv_rv_as_listpf
+         # rm $trv_out
+        exit
+      fi
+      if [ $trv_rv_show_cmd == "l" ] || [ $trv_rv_show_cmd == "last" ]; then
+        trv_rv_last
+        # rm $trv_out
+        exit
+      fi
+      if  [ $trv_rv_show_cmd == "h" ] || [ $trv_rv_show_cmd == "his" ] || [ $trv_rv_show_cmd == "history" ]; then
+        trv_rv_history_listpf
+        # rm $trv_out
+        exit
+      fi
+      if [ $trv_rv_show_cmd == "v" ] || [ $trv_rv_show_cmd == "ver" ] || [ $trv_rv_show_cmd == "version" ]; then
+        echo "  "
+        echo " ####  The TRV (TheRoute View) query script . "
+        echo " ####  This script queries Routeview servers for internet routes via BGP "
+        echo " ####  Version:                    $trv_version "
+        echo " ####  Working Directory:          $trv_working"
+        echo " ####  ASN-List File:              $trv_as_list"
+        echo " ####  Server Configuration file:  $trv_rv_cfg"
+        echo " ####  Written by Tony Bemus - NO GUARANTEES OF SUPPORT"
+        echo " #### "
+        # rm $trv_out
+        exit
+      fi
+    rm $trv_out
+    exit
+fi
+
+if [ $trv_proxy_cleanup ]; then
+    echo " Starting Cleanup for the proxy ports and fifo pipes"
+    trv_telnet_proxy_cleanup
+     exit
+  fi
+
+if [ $trv_repeat ] ; then
+while true
+do
+  if [ $trv_servere ]; then
+    ## Single Server version with the -s option
+    trv_server_port=23
+    ac_headder_printf
+    trv_query
+    echo "   End of query $(date +"%D %T %Z")  "
+    trv_create_history
+  fi
+
+  if [ $trv_method == "rview" ]; then
+       ac_headder_printf
+
+       if [ ! -z $trv_fifo_fix ]; then
+           echo "  **  Gathering Routes  **  "
+           # Stupid Hack to get the correct route to show...
+           trv_rv_routes 2>1 > /dev/null
+       fi
+       ac_headder_printf  >  $trv_out
+       trv_rv_routes
+       trv_rv_servers_report
+       echo "   End of query $(date +"%D %T %Z") "
+       trv_create_history
+    fi
+    echo " Hold for $trv_repeat_timer seconds"
+sleep $trv_repeat_timer
+done
+fi
+
+if [ $trv_servere ]; then
+  ## Single Server version with the -s option
+  trv_server_port=23
+  ac_headder_printf
+  trv_query
+  echo "   End of query $(date +"%D %T %Z")  "
+  trv_create_history
+  exit
+fi
+
+if [ $trv_method == "rview" ]; then
+     ac_headder_printf
+
+     if [ ! -z $trv_fifo_fix ]; then
+         echo "  **  Gathering Routes  **  "
+         # Stupid Hack to get the correct route to show...
+         trv_rv_routes 2>1 > /dev/null
+         # echo " " >  $trv_out
+     fi
+     ac_headder_printf  >  $trv_out
+     trv_rv_routes
+     trv_rv_servers_report
+     echo "   End of query " $(date +"%D %T %Z")
+     trv_create_history
+     exit
+  fi
+
+echo "  No Method or Show command specified"
+
+    exit
