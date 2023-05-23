@@ -1,8 +1,13 @@
 # Tony's Route View
 - The TRV (Tony's Route View) query script .
-- This script will show the AS path for a prefix from multiple routeview servers
+- This is a bash script will show the AS path for a prefix from multiple routeview servers
 - Version 2.8 - 5/28/2023
-- Written by Tony Bemus  - NO GUARANTEES OF SUPPORT
+- Written by Tony Bemus  
+- NO GUARANTEES OF SUPPORT and you run at your own risk
+
+ ### Dependencies:
+ - Tested on Ubuntu but should work on any Linux variant 
+ - Required packages: bash, whois, nc
 
  ###  Usage:  
 - Example: trv -p 195.110.96.1
