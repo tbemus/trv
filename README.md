@@ -54,4 +54,4 @@ server name - server bgp route -  Query Status -  AS Path Route
 ![alt text](trv-screenshot2.PNG)
 
 - ./trv -p 69.14.193.1 -a 12083
-![alt text](trv-screenshot1.PNG)
+![alt text](trv-screenshot.PNG)
