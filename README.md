@@ -1,6 +1,6 @@
 # Tony's Route View
 - The TRV (Tony's Route View) query script.
-- This is a bash script will show the AS path for a prefix from multiple routeview servers
+- This bash script will show the AS path for a prefix from multiple routeview servers
 - Version 2.8 - 5/28/2023
 - Written by Tony Bemus  
 - Web Version available at: https://bemuswaf.bemushosting.com/
@@ -49,4 +49,9 @@ server name - server bgp route -  Query Status -  AS Path Route
 
  -h|--help)            Show this help page.
 
+ ### Screen shots:
+ - ./trv -p 8.8.8.8 -a 15169
+![alt text](trv-screenshot2.PNG)
 
+- ./trv -p 69.14.193.1 -a 12083
+![alt text](trv-screenshot1.PNG)
