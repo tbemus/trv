@@ -2,7 +2,7 @@
 - The TRV (Tony's Route View) query script .
 - This script will show the AS path for a prefix from multiple routeview servers
 - Version 2.8 - 5/28/2023
-- Written and Supported by Tony Bemus
+- Written by Tony Bemus  - NO GUARANTEES OF SUPPORT
 
  ###  Usage:  
 - Example: trv -p 195.110.96.1
